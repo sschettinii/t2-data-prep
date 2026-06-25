@@ -1,0 +1,17 @@
+dados brutos/*
+arq auxiliares/*
+
+!arq auxiliares/br_mdr_snis_municipio_agua_esgoto.csv.gz
+
+*.dbc
+*.dbf
+*.csv
+*.parquet
+*.json
+*.zip
+
+.ipynb_checkpoints/
+__pycache__/
+.venv/
+venv/
+.DS_Store
