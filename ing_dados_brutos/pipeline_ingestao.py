@@ -21,7 +21,6 @@ os.makedirs(PASTA_AUXILIARES, exist_ok=True)
 os.makedirs(PASTA_BRUTOS, exist_ok=True)
 
 def medir_tempo(func):
-    """Envelopa as funções para calcular o tempo total de execução de cada uma."""
     @wraps(func)
     def wrapper(*args, **kwargs):
         inicio = time.time()
@@ -32,11 +31,8 @@ def medir_tempo(func):
         return resultado
     return wrapper
 
-# FUNÇÕES DE INGESTÃO IDEMPOTENTES (CAMADA BRONZE / RAW DATA)
-
 @medir_tempo
 def ingerir_ibge():
-    """Baixa o JSON bruto da API do IBGE apenas se ele não existir localmente."""
     print("\n[1/4] Ingerindo dados brutos do IBGE...")
     caminho_saida = os.path.join(PASTA_BRUTOS, 'municipios_ibge.json')
     
@@ -59,7 +55,6 @@ def ingerir_ibge():
 
 @medir_tempo
 def ingerir_snis():
-    """Lê o CSV bruto do SNIS local (GZ) e extrai para a pasta de dados brutos."""
     print("\n[2/4] Processando dados brutos do SNIS (Saneamento)...")
     arquivo_gz = os.path.join(PASTA_AUXILIARES, "br_mdr_snis_municipio_agua_esgoto.csv.gz")
     caminho_saida = os.path.join(PASTA_BRUTOS, 'snis_saneamento_bruto.csv')
@@ -86,7 +81,6 @@ def ingerir_snis():
 
 @medir_tempo
 def ingerir_inmet():
-    """Baixa o ZIP do INMET e extrai apenas se a pasta de destino não estiver populada."""
     print("\n[3/4] Ingerindo dados brutos do INMET (Clima)...")
     arquivo_zip = os.path.join(PASTA_AUXILIARES, "inmet_2024.zip")
     pasta_destino = os.path.join(PASTA_BRUTOS, "clima_2024_bruto")
@@ -115,7 +109,6 @@ def ingerir_inmet():
 
 @medir_tempo
 def ingerir_datasus():
-    """Baixa o DBC, converte e salva em Parquet usando processamento em lotes (Chunks) para evitar erro de Memória (Killed: 9)."""
     print("\n[4/4] Ingerindo dados brutos do DataSUS (Dengue Brasil)...")
     caminho_saida = os.path.join(PASTA_BRUTOS, 'dengue_brasil_2024_bruto.parquet')
 
@@ -147,12 +140,13 @@ def ingerir_datasus():
             print("  -> Convertendo arquivo proprietário .dbc para .dbf...")
             pyreaddbc.dbc2dbf(arquivo_dbc, arquivo_dbf)
 
-        print("  -> Lendo DBF e convertendo para Parquet em lotes (Chunks) para economizar RAM...")
+        print("  -> Lendo DBF e convertendo para Parquet (100% String para evitar quebra de Schema)...")
         tabela_dbf = DBF(arquivo_dbf, encoding='iso-8859-1', load=False)
         
         tamanho_lote = 250000
         lote_atual = []
         escritor_parquet = None
+        esquema_base = None
         total_registros = 0
 
         for registro in tqdm(tabela_dbf, desc="  -> Progresso", unit=" registros"):
@@ -161,20 +155,40 @@ def ingerir_datasus():
 
             if len(lote_atual) >= tamanho_lote:
                 df_lote = pd.DataFrame(lote_atual)
-                tabela_arrow = pa.Table.from_pandas(df_lote)
+                
+                # ==========================================================
+                # O TRUQUE DA CAMADA BRONZE: Tudo vira texto puro.
+                # 1. Preenche valores vazios do DBF com string vazia
+                # 2. Força todas as colunas a serem tratadas como texto
+                # 3. Limpa literais "None" ou "nan" que o Pandas possa criar
+                # ==========================================================
+                df_lote = df_lote.fillna('')
+                df_lote = df_lote.astype(str)
+                df_lote = df_lote.replace(to_replace=['nan', 'None', '<NA>'], value='')
 
                 if escritor_parquet is None:
-                    escritor_parquet = pq.ParquetWriter(caminho_saida, tabela_arrow.schema)
+                    tabela_arrow = pa.Table.from_pandas(df_lote)
+                    esquema_base = tabela_arrow.schema
+                    escritor_parquet = pq.ParquetWriter(caminho_saida, esquema_base)
+                else:
+                    tabela_arrow = pa.Table.from_pandas(df_lote, schema=esquema_base)
 
                 escritor_parquet.write_table(tabela_arrow)
                 lote_atual = []
 
         if len(lote_atual) > 0:
             df_lote = pd.DataFrame(lote_atual)
-            tabela_arrow = pa.Table.from_pandas(df_lote)
+            
+            df_lote = df_lote.fillna('')
+            df_lote = df_lote.astype(str)
+            df_lote = df_lote.replace(to_replace=['nan', 'None', '<NA>'], value='')
             
             if escritor_parquet is None:
-                escritor_parquet = pq.ParquetWriter(caminho_saida, tabela_arrow.schema)
+                tabela_arrow = pa.Table.from_pandas(df_lote)
+                esquema_base = tabela_arrow.schema
+                escritor_parquet = pq.ParquetWriter(caminho_saida, esquema_base)
+            else:
+                tabela_arrow = pa.Table.from_pandas(df_lote, schema=esquema_base)
                 
             escritor_parquet.write_table(tabela_arrow)
 
